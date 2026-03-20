@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { NextRequest, NextResponse } from "next/server";
+import { pool } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
     // Verify cron secret
     const authHeader = request.headers.get("authorization");
@@ -14,77 +14,67 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Find vendors with expiring documents (within 30 days)
-    const result = await db.query(`
-      SELECT v.id, v.company_name, v.contact_email, v.contact_name,
-             vd.document_type, vd.expiration_date
-      FROM vendors v
-      JOIN vendor_documents vd ON v.id = vd.vendor_id
-      WHERE vd.expiration_date IS NOT NULL
-        AND vd.expiration_date BETWEEN NOW() AND NOW() + INTERVAL '30 days'
-        AND v.status = 'active'
-      ORDER BY vd.expiration_date ASC
-    `);
-
-    const expiringDocs = result.rows;
-
-    if (expiringDocs.length === 0) {
+    const resendApiKey = process.env.RESEND_API_KEY;
+    if (!resendApiKey) {
+      console.warn("RESEND_API_KEY not set, skipping email notifications");
       return NextResponse.json({
-        message: "No expiring documents found",
-        sent: 0,
-      });
-    }
-
-    // Only send emails if RESEND_API_KEY is configured
-    if (!process.env.RESEND_API_KEY) {
-      console.warn(
-        "RESEND_API_KEY not configured, skipping email notifications",
-      );
-      return NextResponse.json({
-        message: "Email notifications skipped (no API key)",
-        count: expiringDocs.length,
+        message: "Email notifications skipped: no API key configured",
       });
     }
 
     const { Resend } = await import("resend");
-    const resend = new Resend(process.env.RESEND_API_KEY);
+    const resend = new Resend(resendApiKey);
 
-    let sent = 0;
-    for (const doc of expiringDocs) {
-      try {
-        const daysUntilExpiry = Math.ceil(
-          (new Date(doc.expiration_date).getTime() - Date.now()) /
-            (1000 * 60 * 60 * 24),
-        );
+    // Find submissions expiring in the next 30 days
+    const result = await pool.query(
+      `SELECT s.id, s.vendor_id, s.expiration_date, v.name as vendor_name, v.contact_email
+       FROM submissions s
+       JOIN vendors v ON s.vendor_id = v.id
+       WHERE s.status = 'approved'
+         AND s.expiration_date IS NOT NULL
+         AND s.expiration_date BETWEEN NOW() AND NOW() + INTERVAL '30 days'
+         AND s.alert_sent = false`,
+      [],
+    );
 
-        await resend.emails.send({
-          from: process.env.FROM_EMAIL || "noreply@example.com",
-          to: doc.contact_email,
-          subject: `Document Expiration Alert: ${doc.document_type}`,
-          html: `
-            <h2>Document Expiration Alert</h2>
-            <p>Dear ${doc.contact_name || doc.company_name},</p>
-            <p>Your <strong>${doc.document_type}</strong> document is expiring in <strong>${daysUntilExpiry} days</strong> (on ${new Date(doc.expiration_date).toLocaleDateString()}).</p>
-            <p>Please update your documentation to maintain your vendor status.</p>
-            <p>Thank you,<br/>Vendor Management Team</p>
-          `,
-        });
-        sent++;
-      } catch (emailError) {
-        console.error(
-          `Failed to send email to ${doc.contact_email}:`,
-          emailError,
-        );
+    const expiring = result.rows;
+
+    let emailsSent = 0;
+    for (const submission of expiring) {
+      if (submission.contact_email) {
+        try {
+          await resend.emails.send({
+            from: process.env.FROM_EMAIL || "noreply@example.com",
+            to: submission.contact_email,
+            subject: `Certificate of Insurance Expiring Soon - ${submission.vendor_name}`,
+            html: `
+              <p>Dear ${submission.vendor_name},</p>
+              <p>Your Certificate of Insurance is expiring on ${new Date(submission.expiration_date).toLocaleDateString()}.</p>
+              <p>Please submit an updated certificate to avoid any disruption.</p>
+            `,
+          });
+
+          // Mark alert as sent
+          await pool.query(
+            "UPDATE submissions SET alert_sent = true WHERE id = $1",
+            [submission.id],
+          );
+
+          emailsSent++;
+        } catch (emailError) {
+          console.error(
+            `Failed to send email for submission ${submission.id}:`,
+            emailError,
+          );
+        }
       }
     }
 
     return NextResponse.json({
-      message: "Expiration alerts sent",
-      sent,
-      total: expiringDocs.length,
+      message: `Processed ${expiring.length} expiring submissions, sent ${emailsSent} emails`,
     });
   } catch (error) {
-    console.error("Cron job error:", error);
+    console.error("Expiration alerts cron error:", error);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },

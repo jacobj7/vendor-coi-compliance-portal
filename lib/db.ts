@@ -12,14 +12,11 @@ pool.on("error", (err) => {
   process.exit(-1);
 });
 
-async function query<T = any>(
-  sql: string,
-  params?: any[],
-): Promise<{ rows: T[]; rowCount: number | null }> {
+async function query(sql: string, params: unknown[] = []) {
   const client = await pool.connect();
   try {
     const result = await client.query(sql, params);
-    return { rows: result.rows as T[], rowCount: result.rowCount };
+    return result;
   } finally {
     client.release();
   }

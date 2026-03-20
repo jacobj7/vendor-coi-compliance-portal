@@ -3,65 +3,54 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { Pool } from "pg";
 
-export const dynamic = "force-dynamic";
-
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
 const registerSchema = z.object({
-  name: z.string().min(2, "Name must be at least 2 characters"),
   email: z.string().email("Invalid email address"),
   password: z.string().min(8, "Password must be at least 8 characters"),
-  organization: z.string().min(1, "Organization is required").optional(),
+  name: z.string().min(1, "Name is required").optional(),
 });
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    const validationResult = registerSchema.safeParse(body);
-    if (!validationResult.success) {
+    const parseResult = registerSchema.safeParse(body);
+    if (!parseResult.success) {
       return NextResponse.json(
         {
           error: "Validation failed",
-          details: validationResult.error.flatten().fieldErrors,
+          details: parseResult.error.flatten().fieldErrors,
         },
         { status: 400 },
       );
     }
 
-    const { name, email, password, organization } = validationResult.data;
+    const { email, password, name } = parseResult.data;
 
     const client = await pool.connect();
-
     try {
       const existingUser = await client.query(
         "SELECT id FROM users WHERE email = $1",
-        [email.toLowerCase()],
+        [email],
       );
 
       if (existingUser.rows.length > 0) {
         return NextResponse.json(
-          { error: "A user with this email already exists" },
+          { error: "Email already in use" },
           { status: 409 },
         );
       }
 
-      const saltRounds = 12;
-      const password_hash = await bcrypt.hash(password, saltRounds);
+      const passwordHash = await bcrypt.hash(password, 10);
 
       const result = await client.query(
-        `INSERT INTO users (name, email, password_hash, organization, role, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-         RETURNING id, name, email, organization, role, created_at`,
-        [
-          name,
-          email.toLowerCase(),
-          password_hash,
-          organization || null,
-          "compliance_manager",
-        ],
+        `INSERT INTO users (email, password_hash, name, created_at, updated_at)
+         VALUES ($1, $2, $3, NOW(), NOW())
+         RETURNING id, email, name, created_at`,
+        [email, passwordHash, name ?? null],
       );
 
       const newUser = result.rows[0];
@@ -71,10 +60,8 @@ export async function POST(request: NextRequest) {
           message: "User registered successfully",
           user: {
             id: newUser.id,
-            name: newUser.name,
             email: newUser.email,
-            organization: newUser.organization,
-            role: newUser.role,
+            name: newUser.name,
             createdAt: newUser.created_at,
           },
         },
@@ -85,14 +72,6 @@ export async function POST(request: NextRequest) {
     }
   } catch (error) {
     console.error("Registration error:", error);
-
-    if (error instanceof SyntaxError) {
-      return NextResponse.json(
-        { error: "Invalid JSON in request body" },
-        { status: 400 },
-      );
-    }
-
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },

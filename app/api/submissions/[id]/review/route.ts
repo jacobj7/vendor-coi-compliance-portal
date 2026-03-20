@@ -22,148 +22,152 @@ export async function POST(
     const session = await getServerSession();
 
     if (!session || !session.user) {
-      return NextResponse.json(
-        { error: "Unauthorized. Please sign in." },
-        { status: 401 },
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const userEmail = session.user.email;
-    if (!userEmail) {
-      return NextResponse.json(
-        { error: "Unable to identify user from session." },
-        { status: 401 },
-      );
-    }
 
     const client = await pool.connect();
-
     try {
-      const coordinatorResult = await client.query(
-        `SELECT id, role FROM users WHERE email = $1`,
+      const adminCheck = await client.query(
+        "SELECT id, role FROM users WHERE email = $1",
         [userEmail],
       );
 
-      if (coordinatorResult.rows.length === 0) {
-        return NextResponse.json({ error: "User not found." }, { status: 403 });
+      if (adminCheck.rows.length === 0) {
+        return NextResponse.json({ error: "User not found" }, { status: 404 });
       }
 
-      const coordinator = coordinatorResult.rows[0];
+      const adminUser = adminCheck.rows[0];
 
-      if (coordinator.role !== "coordinator" && coordinator.role !== "admin") {
+      if (adminUser.role !== "admin") {
         return NextResponse.json(
-          { error: "Forbidden. Coordinator access required." },
+          { error: "Forbidden: Admin access required" },
           { status: 403 },
         );
       }
 
-      const body = await request.json();
-      const parseResult = reviewSchema.safeParse(body);
+      const submissionId = params.id;
 
-      if (!parseResult.success) {
+      if (!submissionId || isNaN(Number(submissionId))) {
+        return NextResponse.json(
+          { error: "Invalid submission ID" },
+          { status: 400 },
+        );
+      }
+
+      const body = await request.json();
+      const validationResult = reviewSchema.safeParse(body);
+
+      if (!validationResult.success) {
         return NextResponse.json(
           {
-            error: "Invalid request body.",
-            details: parseResult.error.flatten(),
+            error: "Invalid request body",
+            details: validationResult.error.errors,
           },
           { status: 400 },
         );
       }
 
-      const { action, notes } = parseResult.data;
-      const coiId = params.id;
+      const { action, notes } = validationResult.data;
 
-      const coiCheck = await client.query(
-        `SELECT id, vendor_id, status FROM certificates_of_insurance WHERE id = $1`,
-        [coiId],
+      const submissionCheck = await client.query(
+        "SELECT id, vendor_id, status FROM submissions WHERE id = $1",
+        [submissionId],
       );
 
-      if (coiCheck.rows.length === 0) {
+      if (submissionCheck.rows.length === 0) {
         return NextResponse.json(
-          { error: "Certificate of Insurance not found." },
+          { error: "Submission not found" },
           { status: 404 },
         );
       }
 
-      const coi = coiCheck.rows[0];
-      const newStatus = action === "approve" ? "approved" : "rejected";
+      const submission = submissionCheck.rows[0];
 
-      await client.query("BEGIN");
-
-      const updateCoiResult = await client.query(
-        `UPDATE certificates_of_insurance
-         SET status = $1,
-             reviewed_at = NOW(),
-             reviewed_by = $2,
-             notes = $3,
-             updated_at = NOW()
-         WHERE id = $4
-         RETURNING *`,
-        [newStatus, coordinator.id, notes ?? null, coiId],
-      );
-
-      const updatedCoi = updateCoiResult.rows[0];
-
-      if (action === "approve") {
-        await client.query(
-          `UPDATE vendors
-           SET compliance_status = 'compliant',
-               updated_at = NOW()
-           WHERE id = $1`,
-          [coi.vendor_id],
-        );
-      } else {
-        await client.query(
-          `UPDATE vendors
-           SET compliance_status = 'non_compliant',
-               updated_at = NOW()
-           WHERE id = $1`,
-          [coi.vendor_id],
+      if (submission.status !== "pending") {
+        return NextResponse.json(
+          { error: "Submission has already been reviewed" },
+          { status: 409 },
         );
       }
 
-      await client.query(
-        `INSERT INTO audit_log (
-           entity_type,
-           entity_id,
-           action,
-           performed_by,
-           details,
-           created_at
-         ) VALUES ($1, $2, $3, $4, $5, NOW())`,
-        [
-          "certificates_of_insurance",
-          coiId,
-          `coi_${action}d`,
-          coordinator.id,
-          JSON.stringify({
-            previous_status: coi.status,
-            new_status: newStatus,
-            notes: notes ?? null,
-            vendor_id: coi.vendor_id,
-          }),
-        ],
-      );
+      const newStatus = action === "approve" ? "approved" : "rejected";
+      const complianceStatus =
+        action === "approve" ? "compliant" : "non_compliant";
 
-      await client.query("COMMIT");
+      await client.query("BEGIN");
 
-      return NextResponse.json(
-        {
-          message: `Certificate of Insurance ${action}d successfully.`,
-          coi: updatedCoi,
-        },
-        { status: 200 },
-      );
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
+      try {
+        const updatedSubmission = await client.query(
+          `UPDATE submissions
+           SET status = $1, reviewed_by = $2, reviewed_at = NOW(), notes = $3, updated_at = NOW()
+           WHERE id = $4
+           RETURNING *`,
+          [newStatus, adminUser.id, notes || null, submissionId],
+        );
+
+        await client.query(
+          `UPDATE vendors
+           SET compliance_status = $1, updated_at = NOW()
+           WHERE id = $2`,
+          [complianceStatus, submission.vendor_id],
+        );
+
+        await client.query(
+          `INSERT INTO audit_logs (
+            action,
+            entity_type,
+            entity_id,
+            performed_by,
+            details,
+            created_at
+          ) VALUES ($1, $2, $3, $4, $5, NOW())`,
+          [
+            `submission_${action}d`,
+            "submission",
+            submissionId,
+            adminUser.id,
+            JSON.stringify({
+              submission_id: submissionId,
+              vendor_id: submission.vendor_id,
+              action,
+              new_status: newStatus,
+              compliance_status: complianceStatus,
+              notes: notes || null,
+              reviewed_by: adminUser.id,
+            }),
+          ],
+        );
+
+        await client.query("COMMIT");
+
+        return NextResponse.json(
+          {
+            message: `Submission ${action}d successfully`,
+            submission: updatedSubmission.rows[0],
+          },
+          { status: 200 },
+        );
+      } catch (transactionError) {
+        await client.query("ROLLBACK");
+        throw transactionError;
+      }
     } finally {
       client.release();
     }
   } catch (error) {
-    console.error("Error reviewing COI submission:", error);
+    console.error("Error reviewing submission:", error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: "Validation error", details: error.errors },
+        { status: 400 },
+      );
+    }
+
     return NextResponse.json(
-      { error: "Internal server error." },
+      { error: "Internal server error" },
       { status: 500 },
     );
   }

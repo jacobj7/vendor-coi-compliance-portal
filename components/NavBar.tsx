@@ -1,57 +1,38 @@
 "use client";
 
-import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
+import Link from "next/link";
 
 export default function NavBar() {
-  const { data: session, status } = useSession();
+  const { data: session } = useSession();
 
   return (
-    <nav className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shadow-sm">
+    <nav className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
       <div className="flex items-center gap-6">
         <Link
           href="/dashboard"
-          className="text-gray-700 hover:text-blue-600 font-medium transition-colors"
+          className="text-gray-700 hover:text-gray-900 font-medium transition-colors"
         >
           Dashboard
         </Link>
         <Link
-          href="/vendors"
-          className="text-gray-700 hover:text-blue-600 font-medium transition-colors"
+          href="/dashboard/vendors"
+          className="text-gray-700 hover:text-gray-900 font-medium transition-colors"
         >
           Vendors
-        </Link>
-        <Link
-          href="/certificates"
-          className="text-gray-700 hover:text-blue-600 font-medium transition-colors"
-        >
-          Certificates
         </Link>
       </div>
 
       <div className="flex items-center gap-4">
-        {status === "authenticated" && session?.user?.email && (
-          <>
-            <span className="text-sm text-gray-600">{session.user.email}</span>
-            <button
-              onClick={() => signOut({ callbackUrl: "/login" })}
-              className="text-sm bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded transition-colors"
-            >
-              Sign Out
-            </button>
-          </>
+        {session?.user?.email && (
+          <span className="text-sm text-gray-500">{session.user.email}</span>
         )}
-        {status === "unauthenticated" && (
-          <Link
-            href="/login"
-            className="text-sm bg-blue-500 hover:bg-blue-600 text-white px-3 py-1.5 rounded transition-colors"
-          >
-            Sign In
-          </Link>
-        )}
-        {status === "loading" && (
-          <span className="text-sm text-gray-400">Loading...</span>
-        )}
+        <button
+          onClick={() => signOut({ callbackUrl: "/login" })}
+          className="bg-red-500 hover:bg-red-600 text-white text-sm font-medium px-4 py-2 rounded-md transition-colors"
+        >
+          Sign Out
+        </button>
       </div>
     </nav>
   );

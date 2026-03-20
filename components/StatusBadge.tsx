@@ -1,89 +1,71 @@
 import React from "react";
 
-type ComplianceStatus =
+type Status =
   | "compliant"
-  | "non_compliant"
-  | "pending"
-  | "under_review"
-  | "exempt"
-  | "unknown"
-  | string;
+  | "expiring_soon"
+  | "expired"
+  | "pending_review"
+  | "rejected";
 
 interface StatusBadgeProps {
-  status: ComplianceStatus;
+  status: string;
   className?: string;
 }
 
-const statusConfig: Record<string, { label: string; classes: string }> = {
+const statusConfig: Record<Status, { label: string; classes: string }> = {
   compliant: {
     label: "Compliant",
-    classes: "bg-green-100 text-green-800 border border-green-200",
+    classes: "bg-green-100 text-green-800 border-green-200",
   },
-  non_compliant: {
-    label: "Non-Compliant",
-    classes: "bg-red-100 text-red-800 border border-red-200",
+  expiring_soon: {
+    label: "Expiring Soon",
+    classes: "bg-yellow-100 text-yellow-800 border-yellow-200",
   },
-  pending: {
-    label: "Pending",
-    classes: "bg-yellow-100 text-yellow-800 border border-yellow-200",
+  expired: {
+    label: "Expired",
+    classes: "bg-red-100 text-red-800 border-red-200",
   },
-  under_review: {
-    label: "Under Review",
-    classes: "bg-blue-100 text-blue-800 border border-blue-200",
+  pending_review: {
+    label: "Pending Review",
+    classes: "bg-blue-100 text-blue-800 border-blue-200",
   },
-  exempt: {
-    label: "Exempt",
-    classes: "bg-purple-100 text-purple-800 border border-purple-200",
-  },
-  unknown: {
-    label: "Unknown",
-    classes: "bg-gray-100 text-gray-800 border border-gray-200",
+  rejected: {
+    label: "Rejected",
+    classes: "bg-gray-100 text-gray-800 border-gray-200",
   },
 };
 
 const defaultConfig = {
   label: "Unknown",
-  classes: "bg-gray-100 text-gray-800 border border-gray-200",
+  classes: "bg-gray-100 text-gray-600 border-gray-200",
 };
 
-function formatLabel(status: string): string {
-  return status
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
 export function StatusBadge({ status, className = "" }: StatusBadgeProps) {
-  const normalizedStatus = status?.toLowerCase?.() ?? "unknown";
-  const config = statusConfig[normalizedStatus] ?? {
-    label: formatLabel(normalizedStatus),
-    classes: defaultConfig.classes,
-  };
+  const normalizedStatus = status?.toLowerCase().replace(/\s+/g, "_") as Status;
+  const config = statusConfig[normalizedStatus] ?? defaultConfig;
 
   return (
     <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${config.classes} ${className}`}
-      aria-label={`Status: ${config.label}`}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${config.classes} ${className}`}
     >
       <span
-        className={`mr-1.5 h-1.5 w-1.5 rounded-full ${getIndicatorColor(normalizedStatus)}`}
-        aria-hidden="true"
+        className={`w-1.5 h-1.5 rounded-full mr-1.5 ${
+          normalizedStatus === "compliant"
+            ? "bg-green-500"
+            : normalizedStatus === "expiring_soon"
+              ? "bg-yellow-500"
+              : normalizedStatus === "expired"
+                ? "bg-red-500"
+                : normalizedStatus === "pending_review"
+                  ? "bg-blue-500"
+                  : normalizedStatus === "rejected"
+                    ? "bg-gray-500"
+                    : "bg-gray-400"
+        }`}
       />
       {config.label}
     </span>
   );
-}
-
-function getIndicatorColor(status: string): string {
-  const indicatorColors: Record<string, string> = {
-    compliant: "bg-green-500",
-    non_compliant: "bg-red-500",
-    pending: "bg-yellow-500",
-    under_review: "bg-blue-500",
-    exempt: "bg-purple-500",
-    unknown: "bg-gray-500",
-  };
-  return indicatorColors[status] ?? "bg-gray-500";
 }
 
 export default StatusBadge;
