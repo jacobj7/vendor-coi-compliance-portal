@@ -16,16 +16,16 @@ interface Vendor {
 }
 
 interface SummaryCardProps {
-  title: string;
-  count: number;
-  color: string;
-  bgColor: string;
-  borderColor: string;
-  icon: React.ReactNode;
+  title?: string;
+  count?: number;
+  color?: string;
+  bgColor?: string;
+  borderColor?: string;
+  icon?: React.ReactNode;
 }
 
 interface PageClientProps {
-  vendors: Vendor[];
+  vendors?: Vendor[];
 }
 
 function SummaryCard({

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
-import { Pool } from "pg";
 import { z } from "zod";
+import { Pool } from "pg";
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +9,15 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-const paramsSchema = z.object({
-  id: z.string().regex(/^\d+$/, "ID must be a numeric string"),
+const patchVendorSchema = z.object({
+  name: z.string().min(1).max(255).optional(),
+  email: z.string().email().optional(),
+  phone: z.string().max(50).optional().nullable(),
+  address: z.string().max(500).optional().nullable(),
+  contact_person: z.string().max(255).optional().nullable(),
+  status: z.enum(["active", "inactive", "pending"]).optional(),
+  category: z.string().max(100).optional().nullable(),
+  notes: z.string().optional().nullable(),
 });
 
 export async function GET(
@@ -23,43 +30,30 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const parsed = paramsSchema.safeParse(params);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: "Invalid vendor ID", details: parsed.error.flatten() },
-        { status: 400 },
-      );
+    const vendorId = params.id;
+
+    if (!vendorId || isNaN(Number(vendorId))) {
+      return NextResponse.json({ error: "Invalid vendor ID" }, { status: 400 });
     }
 
-    const vendorId = parseInt(parsed.data.id, 10);
-
     const client = await pool.connect();
+
     try {
       const vendorResult = await client.query(
-        `
-        SELECT
+        `SELECT 
           v.id,
           v.name,
-          v.contact_name,
-          v.contact_email,
-          v.contact_phone,
+          v.email,
+          v.phone,
           v.address,
-          v.city,
-          v.state,
-          v.zip,
-          v.country,
-          v.website,
+          v.contact_person,
+          v.status,
+          v.category,
           v.notes,
-          v.is_active,
           v.created_at,
-          v.updated_at,
-          vc.id AS category_id,
-          vc.name AS category_name,
-          vc.description AS category_description
+          v.updated_at
         FROM vendors v
-        LEFT JOIN vendor_categories vc ON v.category_id = vc.id
-        WHERE v.id = $1
-        `,
+        WHERE v.id = $1`,
         [vendorId],
       );
 
@@ -70,77 +64,138 @@ export async function GET(
         );
       }
 
-      const vendorRow = vendorResult.rows[0];
+      const vendor = vendorResult.rows[0];
 
-      const coiResult = await client.query(
-        `
-        SELECT
-          coi.id,
-          coi.vendor_id,
-          coi.policy_number,
-          coi.insurer_name,
-          coi.coverage_type,
-          coi.coverage_amount,
-          coi.effective_date,
-          coi.expiration_date,
-          coi.document_url,
-          coi.notes,
-          coi.is_current,
-          coi.created_at,
-          coi.updated_at
-        FROM certificates_of_insurance coi
-        WHERE coi.vendor_id = $1
-        ORDER BY coi.created_at DESC
-        `,
+      const certificatesResult = await client.query(
+        `SELECT 
+          c.id,
+          c.vendor_id,
+          c.certificate_type,
+          c.certificate_number,
+          c.issuing_authority,
+          c.issue_date,
+          c.expiry_date,
+          c.status,
+          c.document_url,
+          c.notes,
+          c.created_at,
+          c.updated_at
+        FROM vendor_certificates c
+        WHERE c.vendor_id = $1
+        ORDER BY c.created_at DESC`,
         [vendorId],
       );
 
-      const vendor = {
-        id: vendorRow.id,
-        name: vendorRow.name,
-        contactName: vendorRow.contact_name,
-        contactEmail: vendorRow.contact_email,
-        contactPhone: vendorRow.contact_phone,
-        address: vendorRow.address,
-        city: vendorRow.city,
-        state: vendorRow.state,
-        zip: vendorRow.zip,
-        country: vendorRow.country,
-        website: vendorRow.website,
-        notes: vendorRow.notes,
-        isActive: vendorRow.is_active,
-        createdAt: vendorRow.created_at,
-        updatedAt: vendorRow.updated_at,
-        category: vendorRow.category_id
-          ? {
-              id: vendorRow.category_id,
-              name: vendorRow.category_name,
-              description: vendorRow.category_description,
-            }
-          : null,
-        certificatesOfInsurance: coiResult.rows.map((coi) => ({
-          id: coi.id,
-          vendorId: coi.vendor_id,
-          policyNumber: coi.policy_number,
-          insurerName: coi.insurer_name,
-          coverageType: coi.coverage_type,
-          coverageAmount: coi.coverage_amount,
-          effectiveDate: coi.effective_date,
-          expirationDate: coi.expiration_date,
-          documentUrl: coi.document_url,
-          notes: coi.notes,
-          isCurrent: coi.is_current,
-          createdAt: coi.created_at,
-          updatedAt: coi.updated_at,
-        })),
+      const response = {
+        ...vendor,
+        certificates: certificatesResult.rows,
       };
 
-      return NextResponse.json({ vendor }, { status: 200 });
+      return NextResponse.json(response, { status: 200 });
     } finally {
       client.release();
     }
   } catch (error) {
     console.error("Error fetching vendor:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const session = await getServerSession();
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const vendorId = params.id;
+
+    if (!vendorId || isNaN(Number(vendorId))) {
+      return NextResponse.json({ error: "Invalid vendor ID" }, { status: 400 });
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const parseResult = patchVendorSchema.safeParse(body);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: "Validation failed", details: parseResult.error.flatten() },
+        { status: 422 },
+      );
+    }
+
+    const data = parseResult.data;
+
+    if (Object.keys(data).length === 0) {
+      return NextResponse.json(
+        { error: "No fields provided for update" },
+        { status: 400 },
+      );
+    }
+
+    const client = await pool.connect();
+
+    try {
+      const existingVendor = await client.query(
+        "SELECT id FROM vendors WHERE id = $1",
+        [vendorId],
+      );
+
+      if (existingVendor.rows.length === 0) {
+        return NextResponse.json(
+          { error: "Vendor not found" },
+          { status: 404 },
+        );
+      }
+
+      const fields = Object.keys(data);
+      const values = Object.values(data);
+
+      const setClauses = fields.map(
+        (field, index) => `${field} = $${index + 1}`,
+      );
+      setClauses.push(`updated_at = NOW()`);
+
+      const updateQuery = `
+        UPDATE vendors
+        SET ${setClauses.join(", ")}
+        WHERE id = $${fields.length + 1}
+        RETURNING 
+          id,
+          name,
+          email,
+          phone,
+          address,
+          contact_person,
+          status,
+          category,
+          notes,
+          created_at,
+          updated_at
+      `;
+
+      const updateResult = await client.query(updateQuery, [
+        ...values,
+        vendorId,
+      ]);
+
+      return NextResponse.json(updateResult.rows[0], { status: 200 });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error("Error updating vendor:", error);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },

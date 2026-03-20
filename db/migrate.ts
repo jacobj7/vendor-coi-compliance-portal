@@ -1,7 +1,4 @@
 import { Pool } from "pg";
-import * as dotenv from "dotenv";
-
-dotenv.config({ path: ".env.local" });
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -14,87 +11,122 @@ async function migrate() {
     await client.query("BEGIN");
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS coordinators (
-        id SERIAL PRIMARY KEY,
-        email VARCHAR(255) NOT NULL UNIQUE,
-        password_hash VARCHAR(255) NOT NULL,
+      CREATE TABLE IF NOT EXISTS organizations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name VARCHAR(255) NOT NULL,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        slug VARCHAR(255) UNIQUE NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        name VARCHAR(255),
+        role VARCHAR(50) NOT NULL DEFAULT 'member',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS vendor_categories (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(255) NOT NULL UNIQUE,
-        description TEXT
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS vendors (
-        id SERIAL PRIMARY KEY,
-        category_id INTEGER REFERENCES vendor_categories(id) ON DELETE SET NULL,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+        category_id UUID REFERENCES vendor_categories(id) ON DELETE SET NULL,
         name VARCHAR(255) NOT NULL,
-        email VARCHAR(255) NOT NULL UNIQUE,
-        contact_name VARCHAR(255),
-        invite_token VARCHAR(255) UNIQUE,
-        compliance_status VARCHAR(50) DEFAULT 'pending' CHECK (compliance_status IN ('pending', 'compliant', 'non_compliant', 'expired')),
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        email VARCHAR(255),
+        phone VARCHAR(50),
+        address TEXT,
+        compliance_status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS certificates_of_insurance (
-        id SERIAL PRIMARY KEY,
-        vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
-        file_url TEXT NOT NULL,
+      CREATE TABLE IF NOT EXISTS submission_requests (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        vendor_id UUID NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+        organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        token UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        message TEXT,
+        expires_at TIMESTAMPTZ,
+        submitted_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS certificates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        vendor_id UUID NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+        organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        submission_request_id UUID REFERENCES submission_requests(id) ON DELETE SET NULL,
+        status VARCHAR(50) NOT NULL DEFAULT 'active',
+        certificate_type VARCHAR(100) NOT NULL,
         insurer_name VARCHAR(255),
         policy_number VARCHAR(255),
-        coverage_type VARCHAR(255),
-        coverage_limit NUMERIC(15, 2),
-        effective_date DATE,
-        expiration_date DATE,
-        status VARCHAR(50) DEFAULT 'pending_review' CHECK (status IN ('pending_review', 'approved', 'rejected', 'expired')),
-        extracted_data JSONB,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        reviewed_at TIMESTAMP WITH TIME ZONE,
-        reviewed_by INTEGER REFERENCES coordinators(id) ON DELETE SET NULL
+        coverage_type VARCHAR(100),
+        coverage_amount NUMERIC(15, 2),
+        coverage_start_date DATE,
+        coverage_end_date DATE,
+        file_url TEXT,
+        file_name VARCHAR(255),
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS compliance_requirements (
-        id SERIAL PRIMARY KEY,
-        category_id INTEGER REFERENCES vendor_categories(id) ON DELETE CASCADE,
-        coverage_type VARCHAR(255) NOT NULL,
-        min_limit NUMERIC(15, 2),
-        required BOOLEAN DEFAULT TRUE
-      )
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS expiration_alerts (
-        id SERIAL PRIMARY KEY,
-        vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
-        coi_id INTEGER NOT NULL REFERENCES certificates_of_insurance(id) ON DELETE CASCADE,
-        alert_type VARCHAR(50) NOT NULL CHECK (alert_type IN ('30_days', '14_days', '7_days', '1_day', 'expired')),
-        days_until_expiry INTEGER,
-        sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        email_sent_to VARCHAR(255)
-      )
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS audit_log (
-        id SERIAL PRIMARY KEY,
-        coordinator_id INTEGER REFERENCES coordinators(id) ON DELETE SET NULL,
-        action VARCHAR(255) NOT NULL,
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        organization_id UUID REFERENCES organizations(id) ON DELETE SET NULL,
+        user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        action VARCHAR(100) NOT NULL,
         entity_type VARCHAR(100),
-        entity_id INTEGER,
-        details JSONB,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        entity_id UUID,
+        old_values JSONB,
+        new_values JSONB,
+        ip_address VARCHAR(45),
+        user_agent TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_organization_id ON users(organization_id)
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_vendor_categories_organization_id ON vendor_categories(organization_id)
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_vendors_organization_id ON vendors(organization_id)
     `);
 
     await client.query(`
@@ -106,43 +138,47 @@ async function migrate() {
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_vendors_invite_token ON vendors(invite_token)
+      CREATE INDEX IF NOT EXISTS idx_submission_requests_vendor_id ON submission_requests(vendor_id)
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_coi_vendor_id ON certificates_of_insurance(vendor_id)
+      CREATE INDEX IF NOT EXISTS idx_submission_requests_token ON submission_requests(token)
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_coi_status ON certificates_of_insurance(status)
+      CREATE INDEX IF NOT EXISTS idx_submission_requests_organization_id ON submission_requests(organization_id)
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_coi_expiration_date ON certificates_of_insurance(expiration_date)
+      CREATE INDEX IF NOT EXISTS idx_certificates_vendor_id ON certificates(vendor_id)
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_compliance_requirements_category_id ON compliance_requirements(category_id)
+      CREATE INDEX IF NOT EXISTS idx_certificates_organization_id ON certificates(organization_id)
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_expiration_alerts_vendor_id ON expiration_alerts(vendor_id)
+      CREATE INDEX IF NOT EXISTS idx_certificates_status ON certificates(status)
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_expiration_alerts_coi_id ON expiration_alerts(coi_id)
+      CREATE INDEX IF NOT EXISTS idx_certificates_coverage_end_date ON certificates(coverage_end_date)
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_audit_log_coordinator_id ON audit_log(coordinator_id)
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_organization_id ON audit_logs(organization_id)
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id)
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id)
     `);
 
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at)
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_type_entity_id ON audit_logs(entity_type, entity_id)
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)
     `);
 
     await client.query("COMMIT");
@@ -159,6 +195,6 @@ async function migrate() {
 }
 
 migrate().catch((error) => {
-  console.error("Fatal migration error:", error);
+  console.error("Unhandled migration error:", error);
   process.exit(1);
 });
