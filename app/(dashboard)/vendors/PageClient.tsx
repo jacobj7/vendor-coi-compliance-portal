@@ -15,7 +15,7 @@ interface Vendor {
 }
 
 interface VendorsPageClientProps {
-  vendors: Vendor[];
+  vendors?: Vendor[];
 }
 
 const addVendorSchema = z.object({

@@ -1,13 +1,22 @@
 import NextAuth, { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import bcrypt from "bcryptjs";
 import { Pool } from "pg";
+import bcrypt from "bcryptjs";
+import { z } from "zod";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+
 export const authOptions: NextAuthOptions = {
+  session: {
+    strategy: "jwt",
+  },
   providers: [
     CredentialsProvider({
       name: "Credentials",
@@ -16,36 +25,34 @@ export const authOptions: NextAuthOptions = {
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        if (!credentials?.email || !credentials?.password) {
+        const parsed = loginSchema.safeParse(credentials);
+        if (!parsed.success) {
           return null;
         }
+
+        const { email, password } = parsed.data;
 
         const client = await pool.connect();
         try {
           const result = await client.query(
-            "SELECT id, name, email, password_hash FROM coordinators WHERE email = $1",
-            [credentials.email],
+            "SELECT id, email, name, password_hash FROM users WHERE email = $1 LIMIT 1",
+            [email],
           );
 
-          if (result.rows.length === 0) {
+          const user = result.rows[0];
+          if (!user) {
             return null;
           }
 
-          const coordinator = result.rows[0];
-
-          const isValid = await bcrypt.compare(
-            credentials.password,
-            coordinator.password_hash,
-          );
-
+          const isValid = await bcrypt.compare(password, user.password_hash);
           if (!isValid) {
             return null;
           }
 
           return {
-            id: String(coordinator.id),
-            name: coordinator.name,
-            email: coordinator.email,
+            id: String(user.id),
+            email: user.email,
+            name: user.name ?? null,
           };
         } finally {
           client.release();
@@ -57,16 +64,16 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
-        token.name = user.name;
         token.email = user.email;
+        token.name = user.name;
       }
       return token;
     },
     async session({ session, token }) {
-      if (token) {
+      if (token && session.user) {
         session.user.id = token.id as string;
-        session.user.name = token.name as string;
         session.user.email = token.email as string;
+        session.user.name = token.name as string | null;
       }
       return session;
     },
@@ -74,20 +81,7 @@ export const authOptions: NextAuthOptions = {
   pages: {
     signIn: "/login",
   },
-  session: {
-    strategy: "jwt",
-  },
   secret: process.env.NEXTAUTH_SECRET,
 };
-
-declare module "next-auth" {
-  interface Session {
-    user: {
-      id: string;
-      name: string;
-      email: string;
-    };
-  }
-}
 
 export default NextAuth(authOptions);
