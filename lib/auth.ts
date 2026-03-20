@@ -1,7 +1,7 @@
 import NextAuth, { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import { Pool } from "pg";
 import bcrypt from "bcryptjs";
+import { Pool } from "pg";
 import { z } from "zod";
 
 const pool = new Pool({
@@ -35,14 +35,15 @@ export const authOptions: NextAuthOptions = {
         const client = await pool.connect();
         try {
           const result = await client.query(
-            "SELECT id, email, name, password_hash FROM users WHERE email = $1 LIMIT 1",
+            "SELECT id, email, name, role, password_hash FROM users WHERE email = $1 LIMIT 1",
             [email],
           );
 
-          const user = result.rows[0];
-          if (!user) {
+          if (result.rows.length === 0) {
             return null;
           }
+
+          const user = result.rows[0];
 
           const isValid = await bcrypt.compare(password, user.password_hash);
           if (!isValid) {
@@ -52,7 +53,8 @@ export const authOptions: NextAuthOptions = {
           return {
             id: String(user.id),
             email: user.email,
-            name: user.name ?? null,
+            name: user.name,
+            role: user.role,
           };
         } finally {
           client.release();
@@ -66,14 +68,19 @@ export const authOptions: NextAuthOptions = {
         token.id = user.id;
         token.email = user.email;
         token.name = user.name;
+        token.role = (user as any).role;
       }
       return token;
     },
     async session({ session, token }) {
-      if (token && session.user) {
-        session.user.id = token.id as string;
-        session.user.email = token.email as string;
-        session.user.name = token.name as string | null;
+      if (token) {
+        session.user = {
+          ...session.user,
+          id: token.id as string,
+          email: token.email as string,
+          name: token.name as string,
+          role: token.role as string,
+        } as any;
       }
       return session;
     },
@@ -83,5 +90,32 @@ export const authOptions: NextAuthOptions = {
   },
   secret: process.env.NEXTAUTH_SECRET,
 };
+
+declare module "next-auth" {
+  interface Session {
+    user: {
+      id: string;
+      email: string;
+      name: string;
+      role: string;
+    };
+  }
+
+  interface User {
+    id: string;
+    email: string;
+    name: string;
+    role: string;
+  }
+}
+
+declare module "next-auth/jwt" {
+  interface JWT {
+    id: string;
+    email: string;
+    name: string;
+    role: string;
+  }
+}
 
 export default NextAuth(authOptions);

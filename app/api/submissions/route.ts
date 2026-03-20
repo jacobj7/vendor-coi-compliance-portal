@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
-import Anthropic from "@anthropic-ai/sdk";
-import { Pool } from "pg";
 import { z } from "zod";
+import { Pool } from "pg";
+import { extractCOIFields } from "@/lib/coi-extractor";
 
 export const dynamic = "force-dynamic";
 
@@ -10,159 +10,133 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
-
-const FormSchema = z.object({
-  vendor_id: z.string().min(1, "vendor_id is required"),
-});
-
-const ExtractedDataSchema = z.object({
-  insurer_name: z.string().nullable().optional(),
-  policy_number: z.string().nullable().optional(),
-  coverage_type: z.string().nullable().optional(),
-  coverage_limit: z.string().nullable().optional(),
-  effective_date: z.string().nullable().optional(),
-  expiration_date: z.string().nullable().optional(),
+const SubmissionSchema = z.object({
+  token: z.string().min(1, "Token is required"),
 });
 
 export async function POST(request: NextRequest) {
+  let client;
   try {
     const formData = await request.formData();
 
-    const vendor_id = formData.get("vendor_id");
+    const token = formData.get("token");
     const file = formData.get("file");
 
-    if (!vendor_id || typeof vendor_id !== "string") {
+    const validationResult = SubmissionSchema.safeParse({ token });
+    if (!validationResult.success) {
       return NextResponse.json(
-        { error: "vendor_id is required" },
-        { status: 400 },
-      );
-    }
-
-    const validation = FormSchema.safeParse({ vendor_id });
-    if (!validation.success) {
-      return NextResponse.json(
-        { error: validation.error.errors },
+        { error: "Invalid request", details: validationResult.error.flatten() },
         { status: 400 },
       );
     }
 
     if (!file || !(file instanceof File)) {
-      return NextResponse.json({ error: "file is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "PDF file is required" },
+        { status: 400 },
+      );
     }
+
+    if (file.type !== "application/pdf") {
+      return NextResponse.json(
+        { error: "File must be a PDF" },
+        { status: 400 },
+      );
+    }
+
+    client = await pool.connect();
+
+    const vendorResult = await client.query(
+      "SELECT id, name, email FROM vendors WHERE token = $1 AND is_active = true",
+      [token],
+    );
+
+    if (vendorResult.rows.length === 0) {
+      return NextResponse.json(
+        { error: "Invalid or inactive token" },
+        { status: 401 },
+      );
+    }
+
+    const vendor = vendorResult.rows[0];
 
     const fileBuffer = await file.arrayBuffer();
     const fileBytes = new Uint8Array(fileBuffer);
 
-    const blobResult = await put(
-      `coi/${vendor_id}/${Date.now()}-${file.name}`,
-      fileBytes,
-      {
-        access: "public",
-        contentType: file.type || "application/octet-stream",
-      },
-    );
+    const timestamp = Date.now();
+    const sanitizedFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const blobPath = `submissions/${vendor.id}/${timestamp}_${sanitizedFileName}`;
 
-    const fileText = new TextDecoder("utf-8").decode(fileBytes);
-
-    const prompt = `You are an expert at extracting information from Certificates of Insurance (COI) documents.
-
-Please analyze the following COI document text and extract the following information:
-1. insurer_name - The name of the insurance company
-2. policy_number - The policy number
-3. coverage_type - The type of coverage (e.g., General Liability, Workers Compensation, etc.)
-4. coverage_limit - The coverage limit amount
-5. effective_date - The effective date of the policy (in YYYY-MM-DD format if possible)
-6. expiration_date - The expiration date of the policy (in YYYY-MM-DD format if possible)
-
-Document text:
-${fileText}
-
-Respond ONLY with a valid JSON object containing these fields. Use null for any fields you cannot find. Example:
-{
-  "insurer_name": "Example Insurance Co.",
-  "policy_number": "POL-123456",
-  "coverage_type": "General Liability",
-  "coverage_limit": "$1,000,000",
-  "effective_date": "2024-01-01",
-  "expiration_date": "2025-01-01"
-}`;
-
-    const message = await anthropic.messages.create({
-      model: "claude-opus-4-5",
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
+    const blob = await put(blobPath, fileBytes, {
+      access: "public",
+      contentType: "application/pdf",
     });
 
-    let extractedData: z.infer<typeof ExtractedDataSchema> = {
-      insurer_name: null,
-      policy_number: null,
-      coverage_type: null,
-      coverage_limit: null,
-      effective_date: null,
-      expiration_date: null,
-    };
+    const extractedData = await extractCOIFields(fileBuffer);
 
-    const responseContent = message.content[0];
-    if (responseContent.type === "text") {
-      try {
-        const jsonMatch = responseContent.text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          const extractedValidation = ExtractedDataSchema.safeParse(parsed);
-          if (extractedValidation.success) {
-            extractedData = extractedValidation.data;
-          }
-        }
-      } catch (parseError) {
-        console.error("Failed to parse Claude response:", parseError);
-      }
-    }
+    const submissionResult = await client.query(
+      `INSERT INTO submissions (
+        vendor_id,
+        pdf_url,
+        blob_pathname,
+        status,
+        extracted_data,
+        created_at,
+        updated_at
+      ) VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+      RETURNING id, vendor_id, pdf_url, status, extracted_data, created_at`,
+      [
+        vendor.id,
+        blob.url,
+        blob.pathname,
+        "pending_review",
+        JSON.stringify(extractedData),
+      ],
+    );
 
-    const client = await pool.connect();
-    try {
-      const result = await client.query(
-        `INSERT INTO certificates_of_insurance 
-          (vendor_id, file_url, status, extracted_data, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())
-         RETURNING id, vendor_id, file_url, status, extracted_data, created_at, updated_at`,
-        [vendor_id, blobResult.url, "pending", JSON.stringify(extractedData)],
-      );
+    const submission = submissionResult.rows[0];
 
-      const certificate = result.rows[0];
-
-      return NextResponse.json(
-        {
-          id: certificate.id,
-          vendor_id: certificate.vendor_id,
-          file_url: certificate.file_url,
-          status: certificate.status,
-          extracted_data: certificate.extracted_data,
-          created_at: certificate.created_at,
-          updated_at: certificate.updated_at,
+    return NextResponse.json(
+      {
+        success: true,
+        submission: {
+          id: submission.id,
+          vendorId: submission.vendor_id,
+          pdfUrl: submission.pdf_url,
+          status: submission.status,
+          extractedData: submission.extracted_data,
+          createdAt: submission.created_at,
         },
-        { status: 201 },
-      );
-    } finally {
-      client.release();
-    }
+        vendor: {
+          id: vendor.id,
+          name: vendor.name,
+          email: vendor.email,
+        },
+      },
+      { status: 201 },
+    );
   } catch (error) {
-    console.error("Error processing submission:", error);
+    console.error("Submission error:", error);
 
     if (error instanceof Error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      if (
+        error.message.includes("relation") &&
+        error.message.includes("does not exist")
+      ) {
+        return NextResponse.json(
+          { error: "Database configuration error" },
+          { status: 500 },
+        );
+      }
     }
 
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },
     );
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 }
