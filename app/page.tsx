@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { authOptions } from "@/lib/auth";
 
-export default async function HomePage() {
+export default async function RootPage() {
   const session = await getServerSession(authOptions);
 
   if (session) {
@@ -11,55 +11,27 @@ export default async function HomePage() {
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center">
-      <div className="max-w-4xl mx-auto px-6 text-center">
-        <div className="mb-8">
-          <h1 className="text-5xl font-bold text-white mb-4 tracking-tight">
-            Welcome to the App
-          </h1>
-          <p className="text-xl text-slate-300 max-w-2xl mx-auto leading-relaxed">
-            A powerful platform to help you get things done. Sign in to your
-            account or create a new one to get started.
+    <main className="min-h-screen flex flex-col items-center justify-center bg-gray-50">
+      <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg">
+        <div className="text-center">
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">Welcome</h1>
+          <p className="text-gray-600 text-lg">
+            Please sign in or create an account to continue.
           </p>
         </div>
-
-        <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mt-10">
+        <div className="flex flex-col gap-4 mt-8">
           <Link
             href="/login"
-            className="w-full sm:w-auto px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors duration-200 text-lg"
+            className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
           >
             Sign In
           </Link>
           <Link
             href="/register"
-            className="w-full sm:w-auto px-8 py-3 bg-transparent border-2 border-slate-400 hover:border-white text-slate-300 hover:text-white font-semibold rounded-lg transition-colors duration-200 text-lg"
+            className="w-full flex justify-center py-3 px-4 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
           >
             Create Account
           </Link>
-        </div>
-
-        <div className="mt-16 grid grid-cols-1 sm:grid-cols-3 gap-8 text-left">
-          <div className="bg-slate-800 bg-opacity-50 rounded-xl p-6 border border-slate-700">
-            <div className="text-blue-400 text-2xl mb-3">⚡</div>
-            <h3 className="text-white font-semibold text-lg mb-2">Fast</h3>
-            <p className="text-slate-400 text-sm leading-relaxed">
-              Built with modern technologies for blazing fast performance.
-            </p>
-          </div>
-          <div className="bg-slate-800 bg-opacity-50 rounded-xl p-6 border border-slate-700">
-            <div className="text-green-400 text-2xl mb-3">🔒</div>
-            <h3 className="text-white font-semibold text-lg mb-2">Secure</h3>
-            <p className="text-slate-400 text-sm leading-relaxed">
-              Your data is protected with industry-standard security practices.
-            </p>
-          </div>
-          <div className="bg-slate-800 bg-opacity-50 rounded-xl p-6 border border-slate-700">
-            <div className="text-purple-400 text-2xl mb-3">🚀</div>
-            <h3 className="text-white font-semibold text-lg mb-2">Scalable</h3>
-            <p className="text-slate-400 text-sm leading-relaxed">
-              Designed to grow with your needs, from day one to day one million.
-            </p>
-          </div>
         </div>
       </div>
     </main>

@@ -1,55 +1,72 @@
 import { notFound } from "next/navigation";
 import { Pool } from "pg";
-import SubmitPageClient from "./SubmitPageClient";
+import SubmitClient from "./SubmitClient";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
 interface PageProps {
-  params: { token: string };
-}
-
-async function getVendorByToken(token: string) {
-  const client = await pool.connect();
-  try {
-    const result = await client.query(
-      "SELECT id, name, email FROM vendors WHERE invite_token = $1 AND invite_token IS NOT NULL",
-      [token],
-    );
-    return result.rows[0] || null;
-  } finally {
-    client.release();
-  }
+  params: {
+    token: string;
+  };
 }
 
 export default async function SubmitPage({ params }: PageProps) {
   const { token } = params;
 
-  if (!token) {
-    notFound();
-  }
+  let vendor: { id: number; name: string } | null = null;
 
-  const vendor = await getVendorByToken(token);
+  try {
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        "SELECT id, name FROM vendors WHERE submission_token = $1 LIMIT 1",
+        [token],
+      );
 
-  if (!vendor) {
-    notFound();
-  }
-
-  return (
-    <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full space-y-8">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold text-gray-900">
-            Certificate of Insurance Submission
-          </h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Submitting on behalf of{" "}
-            <span className="font-semibold text-gray-800">{vendor.name}</span>
+      if (result.rows.length > 0) {
+        vendor = {
+          id: result.rows[0].id,
+          name: result.rows[0].name,
+        };
+      }
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error(
+      "Database error looking up vendor by submission token:",
+      error,
+    );
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="max-w-md w-full bg-white shadow rounded-lg p-8 text-center">
+          <h1 className="text-2xl font-bold text-red-600 mb-4">Error</h1>
+          <p className="text-gray-600">
+            An error occurred while processing your request. Please try again
+            later.
           </p>
         </div>
-        <SubmitPageClient token={token} vendorName={vendor.name} />
       </div>
-    </div>
-  );
+    );
+  }
+
+  if (!vendor) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="max-w-md w-full bg-white shadow rounded-lg p-8 text-center">
+          <h1 className="text-2xl font-bold text-gray-800 mb-4">
+            Page Not Found
+          </h1>
+          <p className="text-gray-600">
+            The submission link you used is invalid or has expired. Please
+            contact your administrator for a new link.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return <SubmitClient vendorId={vendor.id} vendorName={vendor.name} />;
 }

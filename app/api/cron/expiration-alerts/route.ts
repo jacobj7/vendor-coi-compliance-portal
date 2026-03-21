@@ -1,80 +1,54 @@
 import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+import { query } from "@/lib/db";
+import { getResend } from "@/lib/resend";
 
-export const dynamic = "force-dynamic";
-
-export async function GET(request: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
     // Verify cron secret
-    const authHeader = request.headers.get("authorization");
-    if (
-      process.env.CRON_SECRET &&
-      authHeader !== `Bearer ${process.env.CRON_SECRET}`
-    ) {
+    const authHeader = req.headers.get("authorization");
+    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const resendApiKey = process.env.RESEND_API_KEY;
-    if (!resendApiKey) {
-      console.warn("RESEND_API_KEY not set, skipping email notifications");
-      return NextResponse.json({
-        message: "Email notifications skipped: no API key configured",
-      });
-    }
-
-    const { Resend } = await import("resend");
-    const resend = new Resend(resendApiKey);
-
-    // Find submissions expiring in the next 30 days
-    const result = await pool.query(
-      `SELECT s.id, s.vendor_id, s.expiration_date, v.name as vendor_name, v.contact_email
-       FROM submissions s
-       JOIN vendors v ON s.vendor_id = v.id
-       WHERE s.status = 'approved'
-         AND s.expiration_date IS NOT NULL
-         AND s.expiration_date BETWEEN NOW() AND NOW() + INTERVAL '30 days'
-         AND s.alert_sent = false`,
+    // Find COIs expiring in the next 30 days
+    const result = await query(
+      `SELECT c.*, v.name as vendor_name, v.contact_email
+       FROM cois c
+       JOIN vendors v ON v.id = c.vendor_id
+       WHERE c.expiration_date BETWEEN NOW() AND NOW() + INTERVAL '30 days'
+         AND c.status = 'approved'
+         AND (c.last_alert_sent IS NULL OR c.last_alert_sent < NOW() - INTERVAL '7 days')`,
       [],
     );
 
-    const expiring = result.rows;
+    const resend = getResend();
+    let sent = 0;
 
-    let emailsSent = 0;
-    for (const submission of expiring) {
-      if (submission.contact_email) {
-        try {
-          await resend.emails.send({
-            from: process.env.FROM_EMAIL || "noreply@example.com",
-            to: submission.contact_email,
-            subject: `Certificate of Insurance Expiring Soon - ${submission.vendor_name}`,
-            html: `
-              <p>Dear ${submission.vendor_name},</p>
-              <p>Your Certificate of Insurance is expiring on ${new Date(submission.expiration_date).toLocaleDateString()}.</p>
-              <p>Please submit an updated certificate to avoid any disruption.</p>
-            `,
-          });
+    for (const coi of result.rows) {
+      try {
+        await resend.emails.send({
+          from: process.env.EMAIL_FROM || "noreply@example.com",
+          to: coi.contact_email,
+          subject: `COI Expiration Alert - ${coi.vendor_name}`,
+          html: `
+            <p>Your Certificate of Insurance for ${coi.vendor_name} is expiring on ${new Date(coi.expiration_date).toLocaleDateString()}.</p>
+            <p>Please submit an updated COI to avoid any disruption.</p>
+          `,
+        });
 
-          // Mark alert as sent
-          await pool.query(
-            "UPDATE submissions SET alert_sent = true WHERE id = $1",
-            [submission.id],
-          );
+        await query(`UPDATE cois SET last_alert_sent = NOW() WHERE id = $1`, [
+          coi.id,
+        ]);
 
-          emailsSent++;
-        } catch (emailError) {
-          console.error(
-            `Failed to send email for submission ${submission.id}:`,
-            emailError,
-          );
-        }
+        sent++;
+      } catch (err) {
+        console.error(`Failed to send alert for COI ${coi.id}:`, err);
       }
     }
 
-    return NextResponse.json({
-      message: `Processed ${expiring.length} expiring submissions, sent ${emailsSent} emails`,
-    });
+    return NextResponse.json({ success: true, alertsSent: sent });
   } catch (error) {
-    console.error("Expiration alerts cron error:", error);
+    console.error("Expiration alerts error:", error);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },

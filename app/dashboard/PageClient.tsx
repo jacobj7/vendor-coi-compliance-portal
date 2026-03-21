@@ -14,10 +14,10 @@ interface ComplianceBucket {
 }
 
 interface DashboardPageClientProps {
-  compliantCount: number;
-  expiringSoonCount: number;
-  expiredCount: number;
-  pendingReviewCount: number;
+  compliantCount?: number;
+  expiringSoonCount?: number;
+  expiredCount?: number;
+  pendingReviewCount?: number;
 }
 
 export default function DashboardPageClient({
