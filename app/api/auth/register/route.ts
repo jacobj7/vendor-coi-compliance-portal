@@ -3,14 +3,16 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { Pool } from "pg";
 
+export const dynamic = "force-dynamic";
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
 const registerSchema = z.object({
+  name: z.string().min(1, "Name is required").max(255),
   email: z.string().email("Invalid email address"),
   password: z.string().min(8, "Password must be at least 8 characters"),
-  name: z.string().min(1, "Name is required").optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -28,40 +30,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { email, password, name } = parseResult.data;
+    const { name, email, password } = parseResult.data;
 
     const client = await pool.connect();
     try {
       const existingUser = await client.query(
-        "SELECT id FROM users WHERE email = $1",
+        "SELECT id FROM admin_users WHERE email = $1",
         [email],
       );
 
       if (existingUser.rows.length > 0) {
         return NextResponse.json(
-          { error: "Email already in use" },
+          { error: "An account with this email already exists" },
           { status: 409 },
         );
       }
 
-      const passwordHash = await bcrypt.hash(password, 10);
+      const saltRounds = 12;
+      const password_hash = await bcrypt.hash(password, saltRounds);
 
       const result = await client.query(
-        `INSERT INTO users (email, password_hash, name, created_at, updated_at)
+        `INSERT INTO admin_users (name, email, password_hash, created_at, updated_at)
          VALUES ($1, $2, $3, NOW(), NOW())
-         RETURNING id, email, name, created_at`,
-        [email, passwordHash, name ?? null],
+         RETURNING id, name, email, created_at`,
+        [name, email, password_hash],
       );
 
       const newUser = result.rows[0];
 
       return NextResponse.json(
         {
-          message: "User registered successfully",
+          message: "Account created successfully",
           user: {
             id: newUser.id,
-            email: newUser.email,
             name: newUser.name,
+            email: newUser.email,
             createdAt: newUser.created_at,
           },
         },
